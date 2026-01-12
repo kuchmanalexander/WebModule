@@ -1,0 +1,5 @@
+{
+  "name": "Testing System Web Client",
+  "description": "A comprehensive web interface for a distributed testing and surveying system, featuring multi-role access (Student, Teacher, Admin), JWT-based authentication, and structured session management according to the project architecture.",
+  "requestFramePermissions": []
+}
