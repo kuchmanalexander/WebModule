@@ -16,6 +16,8 @@ export interface User {
   fullName: string;
   roles: Role[];
   email: string;
+  isBlocked?: boolean;
+  createdAt?: string; // ISO
 }
 
 export interface Session {
@@ -23,9 +25,15 @@ export interface Session {
   sessionToken?: string;
   loginToken?: string;
   accessToken?: string;
+  accessTokenExpiresAt?: number; // epoch ms
   refreshToken?: string;
+  refreshTokenExpiresAt?: number; // epoch ms
   user?: User;
+  permissions?: string[];
 }
+
+// Permissions — упрощённая модель прав из JWT (task-flow)
+export type Permission = string;
 
 export interface Course {
   id: string;
@@ -48,4 +56,29 @@ export interface Question {
   options: string[];
   correctOptionIndex: number;
   version: number;
+}
+
+
+export enum AttemptStatus {
+  IN_PROGRESS = 'IN_PROGRESS',
+  COMPLETED = 'COMPLETED'
+}
+
+export interface AttemptAnswer {
+  questionId: string;
+  selectedOptionIndex: number | null;
+}
+
+export interface Attempt {
+  id: string;
+  testId: string;
+  userId: string;
+  status: AttemptStatus;
+  startedAt: string; // ISO
+  finishedAt?: string; // ISO
+  // snapshot of question versions at start
+  questions: Question[];
+  answers: Record<string, AttemptAnswer>;
+  score?: number;
+  maxScore?: number;
 }
