@@ -3,6 +3,7 @@ import { Navigate, useNavigate, useSearchParams } from 'react-router-dom';
 import { sessionService } from '../services/sessionService';
 import { useSession } from '../context/SessionProvider';
 import { clearSessionTokenCookie, getSessionTokenFromCookie } from '../utils/cookie';
+import { USE_AUTH_FLOW } from '../constants';
 
 export const LogoutPage: React.FC = () => {
   const navigate = useNavigate();
@@ -15,6 +16,8 @@ export const LogoutPage: React.FC = () => {
       const token = getSessionTokenFromCookie();
       if (token) {
         await sessionService.logout(token, all);
+      } else if (USE_AUTH_FLOW) {
+        await sessionService.logout('', all);
       }
       clearSessionTokenCookie();
       await refresh();

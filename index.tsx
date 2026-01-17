@@ -12,11 +12,13 @@ if (!rootElement) {
 
 const root = ReactDOM.createRoot(rootElement);
 root.render(
-  <React.StrictMode>
-    <UiProvider>
-      <SessionProvider>
-        <App />
-      </SessionProvider>
-    </UiProvider>
-  </React.StrictMode>
+  // NOTE: React.StrictMode в dev запускает useEffect дважды.
+  // Для OAuth / Redis-flow это может приводить к двойному старту логина
+  // и "прыгающему" состоянию (петли /dashboard <-> /).
+  // Поэтому здесь StrictMode отключён.
+  <UiProvider>
+    <SessionProvider>
+      <App />
+    </SessionProvider>
+  </UiProvider>
 );

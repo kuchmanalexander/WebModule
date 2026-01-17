@@ -1,5 +1,6 @@
 
 import React from 'react';
+import { Link } from 'react-router-dom';
 import { User, UserStatus, Role } from '../types';
 
 interface LayoutProps {
@@ -10,6 +11,14 @@ interface LayoutProps {
 }
 
 const Layout: React.FC<LayoutProps> = ({ user, status, onLogout, children }) => {
+  const handleLogout = (all?: boolean) => {
+    if (all) {
+      onLogout(true);
+      return;
+    }
+    window.location.href = '/logout';
+  };
+
   return (
     <div className="flex flex-col h-full overflow-hidden bg-gray-50">
       {/* Header */}
@@ -30,8 +39,11 @@ const Layout: React.FC<LayoutProps> = ({ user, status, onLogout, children }) => 
                 ))}
               </div>
             </div>
+            <Link to="/user" className="text-sm font-semibold text-indigo-600 hover:text-indigo-700">
+              Профиль
+            </Link>
             <button 
-              onClick={() => onLogout(false)}
+              onClick={() => handleLogout(false)}
               className="text-sm font-medium text-gray-500 hover:text-red-600 transition-colors"
             >
               Выход

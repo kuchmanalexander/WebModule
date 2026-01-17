@@ -1,10 +1,14 @@
-import React from 'react';
-import { Link } from 'react-router-dom';
+import React, { useEffect, useState } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
 import { UserStatus } from '../types';
 import { useSession } from '../context/SessionProvider';
+import { sessionService } from '../services/sessionService';
+import { AUTH_POLL_INTERVAL_MS, USE_AUTH_FLOW } from '../constants';
 
 export const HomePage: React.FC = () => {
-  const { session, loading } = useSession();
+  const { session, loading, refresh } = useSession();
+  const navigate = useNavigate();
+  const [authError, setAuthError] = useState<string | null>(null);
 
   if (loading) {
     return (
@@ -33,6 +37,38 @@ export const HomePage: React.FC = () => {
           </Link>
           <div className="mt-4 text-xs text-gray-400 text-center">
             Пользователь: {session.user?.fullName}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (USE_AUTH_FLOW && session.status === UserStatus.ANONYMOUS && session.loginToken) {
+    return (
+      <div className="flex items-center justify-center min-h-screen bg-gray-50 p-4">
+        <div className="max-w-md w-full bg-white rounded-2xl shadow-xl overflow-hidden p-8 border border-gray-100">
+          <div className="text-center mb-6">
+            <h1 className="text-2xl font-bold text-gray-900">Ожидаем авторизацию</h1>
+            <p className="text-gray-500 mt-2 text-sm">Проверяем статус входа...</p>
+          </div>
+          <div className="flex items-center justify-center">
+            <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-indigo-600" />
+          </div>
+          {authError && (
+            <div className="mt-6 p-3 bg-red-50 rounded-lg text-sm text-red-700 border border-red-100">
+              {authError}
+            </div>
+          )}
+          <div className="mt-6 flex justify-center">
+            <button
+              onClick={() => {
+                sessionService.clearAuthFlow();
+                window.location.reload();
+              }}
+              className="px-4 py-2 bg-gray-900 hover:bg-black text-white font-semibold rounded-xl transition-all"
+            >
+              Отменить
+            </button>
           </div>
         </div>
       </div>

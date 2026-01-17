@@ -10,6 +10,7 @@ import { CourseDetailsPage } from './pages/CourseDetailsPage';
 import { TestDetailsPage } from './pages/TestDetailsPage';
 import { AttemptPage } from './pages/AttemptPage';
 import { AttemptResultPage } from './pages/AttemptResultPage';
+import { UserPage } from './pages/UserPage';
 import { RequireAuth } from './router/RequireAuth';
 import RequirePermission from './router/RequirePermission';
 import UiOverlays from './components/UiOverlays';
@@ -144,6 +145,14 @@ const App: React.FC = () => {
   element={
     <RequireAuth>
       <AttemptResultPage />
+    </RequireAuth>
+  }
+/>
+<Route
+  path="/user"
+  element={
+    <RequireAuth>
+      <UserPage />
     </RequireAuth>
   }
 />

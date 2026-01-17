@@ -6,11 +6,58 @@ import { useSession } from '../context/SessionProvider';
 import { mainClient } from '../services/mainClient';
 import { useUi } from '../context/UiProvider';
 import { USE_MOCK_MAIN_API } from '../constants';
+import { UserStatus } from '../types';
+
+type GradeRow = {
+  testId: string;
+  testTitle: string;
+  finishedAt?: string;
+  score?: number;
+  maxScore?: number;
+};
+
+function parseScore(value: any): number | undefined {
+  if (typeof value === 'number') return value;
+  if (typeof value === 'string' && value.trim() !== '') {
+    const n = Number(value);
+    if (!Number.isNaN(n)) return n;
+  }
+  return undefined;
+}
+
+function mapGradeItem(testId: string, testTitle: string, item: any): GradeRow {
+  if (!item || typeof item !== 'object') {
+    return { testId, testTitle };
+  }
+  return {
+    testId,
+    testTitle,
+    finishedAt: item.finished_at ?? item.finishedAt ?? item.completed_at ?? item.completedAt ?? item.created_at ?? item.createdAt,
+    score: parseScore(item.score ?? item.result_score ?? item.points),
+    maxScore: parseScore(item.max_score ?? item.maxScore ?? item.max_points ?? item.maxPoints),
+  };
+}
+
 
 export const DashboardPage: React.FC = () => {
   const { session } = useSession();
   const { pushToast } = useUi();
   const [activeTab, setActiveTab] = useState<'courses' | 'admin'>('courses');
+  const [gradesLoading, setGradesLoading] = useState(false);
+  const [grades, setGrades] = useState<GradeRow[]>([]);
+
+  // ✅ Пока сессия/пользователь не подтянулись — показываем явный лоадер.
+  // Иначе в момент сразу после логина можно получить "белый экран".
+  if (session.status !== UserStatus.AUTHORIZED || !session.user) {
+    return (
+      <div className="flex items-center justify-center h-screen bg-white">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-600 mx-auto" />
+          <p className="mt-4 text-gray-600 font-medium">Загружаем кабинет…</p>
+        </div>
+      </div>
+    );
+  }
 
   const [coursesLoading, setCoursesLoading] = useState(false);
   const [courses, setCourses] = useState<{ id: string; title: string }[]>([]);
@@ -33,6 +80,46 @@ export const DashboardPage: React.FC = () => {
   const canCreateCourse = !USE_MOCK_MAIN_API ? false : perms.includes('course:add');
 
   useEffect(() => {
+    if (session.status !== UserStatus.AUTHORIZED || !session.user?.id) return;
+    let mounted = true;
+    (async () => {
+      setGradesLoading(true);
+      try {
+        const userId = session.user?.id;
+        const courses = await mainClient.getCourses();
+        const testsByCourse = await Promise.all(
+          courses.map((c) => mainClient.getTestsByCourse(c.id).catch(() => []))
+        );
+        const tests = testsByCourse.flat();
+        const rows: GradeRow[] = [];
+
+        await Promise.all(
+          tests.map(async (t) => {
+            const gradesRaw = await mainClient.getTestGrades(t.id, userId).catch(() => []);
+            const list = Array.isArray(gradesRaw) ? gradesRaw : gradesRaw ? [gradesRaw] : [];
+            if (list.length === 0) return;
+            const testTitle = t.title || `Тест ${t.id}`;
+            rows.push(...list.map((item) => mapGradeItem(t.id, testTitle, item)));
+          })
+        );
+
+        if (!mounted) return;
+        setGrades(rows);
+      } catch (e: any) {
+        if (!mounted) return;
+        pushToast({ kind: 'error', title: 'Не удалось загрузить оценки', message: e?.message || 'Ошибка' });
+        setGrades([]);
+      } finally {
+        if (mounted) setGradesLoading(false);
+      }
+    })();
+    return () => {
+      mounted = false;
+    };
+  }, [pushToast, session.status, session.user?.id]);
+
+  useEffect(() => {
+    if (session.status !== 'AUTHORIZED') return;
     let mounted = true;
     (async () => {
       try {
@@ -51,7 +138,7 @@ export const DashboardPage: React.FC = () => {
     return () => {
       mounted = false;
     };
-  }, [pushToast]);
+  }, [pushToast, session.status, session.accessToken]);
 
   const courseCards = useMemo(() => {
     if (coursesLoading) {
@@ -174,28 +261,48 @@ export const DashboardPage: React.FC = () => {
         </section>
 
         <section className="bg-gradient-to-br from-indigo-600 to-violet-700 rounded-3xl p-8 text-white shadow-xl shadow-indigo-100">
-          <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
-            <div className="max-w-md">
-              <h3 className="text-xl font-bold mb-2">Статус сессии в Redis</h3>
+          <div className="flex items-center justify-between gap-6">
+            <div>
+              <h3 className="text-xl font-bold mb-1">Оценки по тестам</h3>
               <p className="text-indigo-100 text-sm leading-relaxed">
-                Ваш сеанс активен. Access-токен используется для подписи запросов к Главному модулю системы.
+                История завершенных попыток пользователя.
               </p>
-              <div className="mt-4">
-                <Link to="/courses" className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-indigo-600 text-white font-bold text-sm hover:bg-indigo-700">
-                  Перейти к дисциплинам <span className="translate-y-[1px]">→</span>
-                </Link>
-              </div>
             </div>
-            <div className="flex gap-3">
-              <div className="px-4 py-2 bg-white/10 backdrop-blur-md rounded-xl border border-white/20">
-                <p className="text-[10px] text-indigo-200 uppercase font-bold">Статус</p>
-                <p className="text-sm font-mono font-bold">AUTHORIZED</p>
+          </div>
+
+          <div className="mt-6">
+            {gradesLoading ? (
+              <div className="text-indigo-100">Загружаем оценки…</div>
+            ) : grades.length === 0 ? (
+              <div className="text-indigo-100">Пока нет завершенных попыток.</div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="min-w-full text-sm">
+                  <thead>
+                    <tr className="text-left text-indigo-200">
+                      <th className="py-2 pr-3">Тест</th>
+                      <th className="py-2 pr-3">Завершение</th>
+                      <th className="py-2 pr-3">Результат</th>
+                    </tr>
+                  </thead>
+                  <tbody className="text-white">
+                    {grades.map((row, idx) => (
+                      <tr key={`${row.testId}-${idx}`} className="border-t border-white/10">
+                        <td className="py-2 pr-3 font-semibold">{row.testTitle}</td>
+                        <td className="py-2 pr-3">
+                          {row.finishedAt ? new Date(row.finishedAt).toLocaleString() : '—'}
+                        </td>
+                        <td className="py-2 pr-3 font-bold">
+                          {typeof row.score === 'number'
+                            ? `${row.score}${typeof row.maxScore === 'number' ? `/${row.maxScore}` : ''}`
+                            : '—'}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
-              <div className="px-4 py-2 bg-white/10 backdrop-blur-md rounded-xl border border-white/20">
-                <p className="text-[10px] text-indigo-200 uppercase font-bold">TTL Сессии</p>
-                <p className="text-sm font-mono font-bold">12:59:59</p>
-              </div>
-            </div>
+            )}
           </div>
         </section>
       </div>
