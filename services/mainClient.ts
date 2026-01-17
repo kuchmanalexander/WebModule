@@ -1,8 +1,82 @@
 import * as mainApi from './mainApi';
 import { mainApiHttp } from './mainApiHttp';
 import { ApiError, requestWithAuth, RequestOptions } from './apiClient';
-import { Attempt, Course, Question, Test } from '../types';
+import { Attempt, AttemptStatus, Course, Question, Test, UserData } from '../types';
 import { USE_MOCK_MAIN_API } from '../constants';
+
+const activeAttemptKey = (testId: string, userId: string) => `active_attempt:${userId}:${testId}`;
+const questionCacheKey = (testId: string) => `questions_by_test:${testId}`;
+
+function loadActiveAttemptId(testId: string, userId: string) {
+  try {
+    return localStorage.getItem(activeAttemptKey(testId, userId));
+  } catch {
+    return null;
+  }
+}
+
+function saveActiveAttemptId(testId: string, userId: string, attemptId: string) {
+  try {
+    localStorage.setItem(activeAttemptKey(testId, userId), attemptId);
+  } catch {
+    // ignore storage failures
+  }
+}
+
+function clearActiveAttemptId(testId: string, userId: string) {
+  try {
+    localStorage.removeItem(activeAttemptKey(testId, userId));
+  } catch {
+    // ignore storage failures
+  }
+}
+
+function trackAttempt(attempt: Attempt | null, fallbackTestId?: string, fallbackUserId?: string) {
+  if (!attempt) return attempt;
+  const testId = attempt.testId || fallbackTestId;
+  const userId = attempt.userId || fallbackUserId;
+  if (!testId || !userId) return attempt;
+  if (attempt.status === AttemptStatus.IN_PROGRESS) {
+    saveActiveAttemptId(testId, userId, attempt.id);
+  } else {
+    clearActiveAttemptId(testId, userId);
+  }
+  return attempt;
+}
+
+function loadCachedQuestions(testId: string): Question[] {
+  try {
+    const raw = localStorage.getItem(questionCacheKey(testId));
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveCachedQuestions(testId: string, questions: Question[]) {
+  try {
+    localStorage.setItem(questionCacheKey(testId), JSON.stringify(questions));
+  } catch {
+    // ignore storage failures
+  }
+}
+
+function upsertCachedQuestion(testId: string, q: Question) {
+  const list = loadCachedQuestions(testId);
+  const idx = list.findIndex((x) => x.id === q.id);
+  const next = idx >= 0 ? [...list.slice(0, idx), q, ...list.slice(idx + 1)] : [q, ...list];
+  saveCachedQuestions(testId, next);
+  return next;
+}
+
+function removeCachedQuestion(testId: string, questionId: string) {
+  const list = loadCachedQuestions(testId);
+  const next = list.filter((x) => x.id !== questionId);
+  saveCachedQuestions(testId, next);
+  return next;
+}
 
 /**
  * MainClient — тонкая обёртка над Main API.
@@ -37,24 +111,42 @@ export const mainClient = {
     ),
 
   getAttemptsForTest: (testId: string, userId: string) =>
-    requestWithAuth((session) =>
-      USE_MOCK_MAIN_API ? mainApi.getAttemptsForTest(testId, userId) : mainApiHttp.getAttemptsForTest(session, testId, userId)
-    ),
+    requestWithAuth((session) => {
+      if (USE_MOCK_MAIN_API) return mainApi.getAttemptsForTest(testId, userId);
+      const activeId = loadActiveAttemptId(testId, userId);
+      if (!activeId) return Promise.resolve([] as Attempt[]);
+      return mainApiHttp.getAttempt(session, activeId).then((a) => (trackAttempt(a, testId, userId) ? [a] : []));
+    }),
 
   getActiveAttempt: (testId: string, userId: string) =>
-    requestWithAuth((session) =>
-      USE_MOCK_MAIN_API ? mainApi.getActiveAttempt(testId, userId) : mainApiHttp.getActiveAttempt(session, testId, userId)
-    ),
+    requestWithAuth((session) => {
+      if (USE_MOCK_MAIN_API) return mainApi.getActiveAttempt(testId, userId);
+      const activeId = loadActiveAttemptId(testId, userId);
+      if (!activeId) return Promise.resolve(null);
+      return mainApiHttp.getAttempt(session, activeId).then((a) => trackAttempt(a, testId, userId));
+    }),
 
   createAttempt: (testId: string, userId: string) =>
-    requestWithAuth((session) =>
-      USE_MOCK_MAIN_API ? mainApi.createAttempt(testId, userId) : mainApiHttp.createAttempt(session, testId, userId)
-    ),
+    requestWithAuth((session) => {
+      if (USE_MOCK_MAIN_API) return mainApi.createAttempt(testId, userId);
+      return mainApiHttp.createAttempt(session, testId).then((a) => trackAttempt(a, testId, userId) || a);
+    }),
+
+  getTestGrades: (testId: string, userId: string) =>
+    requestWithAuth((session) => {
+      if (USE_MOCK_MAIN_API) {
+        return mainApi.getAttemptsForTest(testId, userId).then((list) =>
+          list.filter((a) => a.status === AttemptStatus.COMPLETED)
+        );
+      }
+      return mainApiHttp.getTestGrades(session, testId, userId);
+    }),
 
   getAttempt: (attemptId: string, userId: string) =>
-    requestWithAuth((session) =>
-      USE_MOCK_MAIN_API ? mainApi.getAttempt(attemptId, userId) : mainApiHttp.getAttempt(session, attemptId, userId)
-    ),
+    requestWithAuth((session) => {
+      if (USE_MOCK_MAIN_API) return mainApi.getAttempt(attemptId, userId);
+      return mainApiHttp.getAttempt(session, attemptId).then((a) => trackAttempt(a, a?.testId, userId));
+    }),
 
   saveAnswer: (attemptId: string, userId: string, questionId: string, selectedOptionIndex: number) =>
     requestWithAuth((session) =>
@@ -64,9 +156,10 @@ export const mainClient = {
     ),
 
   finishAttempt: (attemptId: string, userId: string) =>
-    requestWithAuth((session) =>
-      USE_MOCK_MAIN_API ? mainApi.finishAttempt(attemptId, userId) : mainApiHttp.finishAttempt(session, attemptId, userId)
-    ),
+    requestWithAuth((session) => {
+      if (USE_MOCK_MAIN_API) return mainApi.finishAttempt(attemptId, userId);
+      return mainApiHttp.finishAttempt(session, attemptId).then((a) => trackAttempt(a, a?.testId, userId));
+    }),
 
   resetMockData: () =>
     requestWithAuth((session) => (USE_MOCK_MAIN_API ? mainApi.resetMockData() : mainApiHttp.resetMockData(session))),
@@ -78,6 +171,16 @@ export const mainClient = {
       // в HTTP-режиме не блокируем операции: пусть решает backend (403).
       if (USE_MOCK_MAIN_API && !session.permissions?.includes('user:list:read')) throw new ApiError(403, 'Forbidden');
       return USE_MOCK_MAIN_API ? mainApi.getUsers() : mainApiHttp.getUsers(session);
+    }),
+  getUserData: (userId: string) =>
+    requestWithAuth((session) => {
+      if (USE_MOCK_MAIN_API) return mainApi.getUserData(userId) as Promise<UserData | null>;
+      return mainApiHttp.getUserData(session, userId);
+    }),
+  updateUserFullName: (userId: string, fullName: string) =>
+    requestWithAuth((session) => {
+      if (USE_MOCK_MAIN_API) return mainApi.updateUserFullName(userId, fullName);
+      return mainApiHttp.updateUserFullName(session, userId, fullName);
     }),
   blockUser: (userId: string) =>
     requestWithAuth((session) => {
@@ -158,28 +261,44 @@ export const mainClient = {
       if (USE_MOCK_MAIN_API && !session.permissions?.includes('quest:list:read') && !session.permissions?.includes('quest:create')) {
         throw new ApiError(403, 'Forbidden');
       }
-      return USE_MOCK_MAIN_API ? mainApi.getQuestionsForTest(testId) : mainApiHttp.getQuestionsForTest(session, testId);
+      if (USE_MOCK_MAIN_API) return mainApi.getQuestionsForTest(testId);
+      const cached = loadCachedQuestions(testId);
+      if (cached.length > 0) return Promise.resolve(cached);
+      return mainApiHttp.getQuestionsForTest(session, testId).then((list) => {
+        if (list.length > 0) saveCachedQuestions(testId, list);
+        return list;
+      });
     }),
   createQuestion: (testId: string, input: Omit<Question, 'id' | 'version'>) =>
     requestWithAuth((session) => {
       if (USE_MOCK_MAIN_API && !session.permissions?.includes('quest:create')) throw new ApiError(403, 'Forbidden');
-      return USE_MOCK_MAIN_API ? mainApi.createQuestion(testId, input) : mainApiHttp.createQuestion(session, { ...input, testId });
+      if (USE_MOCK_MAIN_API) return mainApi.createQuestion(testId, input);
+      return mainApiHttp.createQuestion(session, { ...input, testId }).then((q) => {
+        upsertCachedQuestion(testId, q);
+        return q;
+      });
     }),
   updateQuestion: (testId: string, questionId: string, patch: Partial<Question>, bumpVersion: boolean = true) =>
     requestWithAuth((session) => {
       if (USE_MOCK_MAIN_API && !session.permissions?.includes('quest:update') && !session.permissions?.includes('quest:create')) {
         throw new ApiError(403, 'Forbidden');
       }
-      return USE_MOCK_MAIN_API
-        ? mainApi.updateQuestion(testId, questionId, patch, bumpVersion)
-        : mainApiHttp.updateQuestion(session, testId, questionId, patch, bumpVersion);
+      if (USE_MOCK_MAIN_API) return mainApi.updateQuestion(testId, questionId, patch, bumpVersion);
+      return mainApiHttp.updateQuestion(session, testId, questionId, patch, bumpVersion).then((q) => {
+        if (q) upsertCachedQuestion(testId, q);
+        return q;
+      });
     }),
   deleteQuestion: (testId: string, questionId: string) =>
     requestWithAuth((session) => {
       if (USE_MOCK_MAIN_API && !session.permissions?.includes('quest:del') && !session.permissions?.includes('quest:create')) {
         throw new ApiError(403, 'Forbidden');
       }
-      return USE_MOCK_MAIN_API ? mainApi.deleteQuestion(testId, questionId) : mainApiHttp.deleteQuestion(session, questionId);
+      if (USE_MOCK_MAIN_API) return mainApi.deleteQuestion(testId, questionId);
+      return mainApiHttp.deleteQuestion(session, questionId).then((res) => {
+        removeCachedQuestion(testId, questionId);
+        return res;
+      });
     }),
 
   getAllAttempts: () =>

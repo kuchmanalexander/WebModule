@@ -1,5 +1,5 @@
-import { MAIN_API_BASE_URL, MANUAL_JWT_TOKEN } from '../constants';
-import { Attempt, Course, Question, Session, Test, User } from '../types';
+import { MAIN_API_BASE_URL, MANUAL_JWT_TOKEN, USE_AUTH_FLOW } from '../constants';
+import { Attempt, AttemptAnswer, AttemptStatus, Course, Question, Session, Test, User, UserData } from '../types';
 import { ApiError } from './apiClient';
 
 /**
@@ -13,22 +13,30 @@ import { ApiError } from './apiClient';
  */
 
 async function http<T>(session: Session, path: string, init?: RequestInit): Promise<T> {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...(init?.headers as any),
+  };
+
+  // ✅ В BFF+Redis режиме НЕ ставим Authorization на фронте.
+  // BFF сам добавляет Bearer из Redis.
+  // Поэтому единственное важное: credentials: 'include'
+  if (!USE_AUTH_FLOW) {
+    if (MANUAL_JWT_TOKEN) headers.Authorization = `Bearer ${MANUAL_JWT_TOKEN}`;
+    else if (session.accessToken) headers.Authorization = `Bearer ${session.accessToken}`;
+  }
+
   const res = await fetch(`${MAIN_API_BASE_URL}${path}`, {
     ...init,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(init?.headers || {}),
-      // Пока авторизация не подключена: можно вручную вставить токен в constants.ts (MANUAL_JWT_TOKEN)
-      ...(MANUAL_JWT_TOKEN ? { Authorization: `Bearer ${MANUAL_JWT_TOKEN}` } : {}),
-      ...(MANUAL_JWT_TOKEN ? {} : session.accessToken ? { Authorization: `Bearer ${session.accessToken}` } : {}),
-    },
+    headers,
+    credentials: 'include',
   });
 
   if (!res.ok) {
     let msg = res.statusText;
     try {
       const body = await res.json();
-      const detail = body?.detail ?? body?.message ?? body?.error ?? body;
+      const detail = (body as any)?.detail ?? (body as any)?.message ?? (body as any)?.error ?? body;
       msg = formatErrorDetail(detail) || msg;
     } catch {
       // ignore
@@ -36,11 +44,10 @@ async function http<T>(session: Session, path: string, init?: RequestInit): Prom
     throw new ApiError(res.status, msg);
   }
 
-  // 204 No Content
   if (res.status === 204) return undefined as unknown as T;
-
   return (await res.json()) as T;
 }
+
 
 function formatErrorDetail(detail: any): string | null {
   if (!detail) return null;
@@ -80,10 +87,11 @@ function mapCourse(raw: any): Course {
   return {
     id: String(raw.id ?? raw.course_id ?? raw.courseId),
     title: String(raw.title ?? raw.name ?? raw.course_name ?? 'Course'),
-    description: raw.description ? String(raw.description) : undefined,
+    description: raw.description ? String(raw.description) : '',
     teacherId: String(raw.teacher_id ?? raw.teacherId ?? ''),
   };
 }
+
 
 function mapTest(raw: any, courseId?: string): Test {
   return {
@@ -106,6 +114,23 @@ function mapUserShort(raw: any): User {
   };
 }
 
+function mapUserData(raw: any): UserData {
+  return {
+    id: String(raw.id ?? raw.user_id ?? raw.userId),
+    username: String(raw.username ?? raw.login ?? raw.email ?? ''),
+    fullName: String(raw.full_name ?? raw.fullName ?? raw.username ?? 'User'),
+    email: raw.email ?? null,
+    isBlocked: Boolean(raw.is_blocked ?? raw.isBlocked ?? false),
+    roles: Array.isArray(raw.roles) ? raw.roles.map(String) : raw.role ? [String(raw.role)] : [],
+    coursesCount: Number(raw.courses_count ?? raw.coursesCount ?? 0),
+    attemptsCount: Number(raw.attempts_count ?? raw.attemptsCount ?? 0),
+  };
+}
+
+function getTokenUserId(session: Session): string | null {
+  return session.user?.id ? String(session.user.id) : null;
+}
+
 function mapQuestion(raw: any): Question {
   // По контракту:
   // - question_id — логический id вопроса
@@ -120,22 +145,88 @@ function mapQuestion(raw: any): Question {
   };
 }
 
-function mapAttempt(raw: any): Attempt {
-  // "Attempt" в UI ожидает questions snapshot + answers.
+function normalizeAttemptStatus(status: any): AttemptStatus {
+  const val = String(status ?? '').toLowerCase();
+  if (val === 'in_progress' || val === 'active' || val === 'inprogress') return AttemptStatus.IN_PROGRESS;
+  if (val === 'finished' || val === 'completed' || val === 'complete') return AttemptStatus.COMPLETED;
+  return (status as AttemptStatus) || AttemptStatus.IN_PROGRESS;
+}
+
+function parseScore(value: any): number | undefined {
+  if (typeof value === 'number') return value;
+  if (typeof value === 'string' && value.trim() !== '') {
+    const n = Number(value);
+    if (!Number.isNaN(n)) return n;
+  }
+  return undefined;
+}
+
+function mapAttemptAnswers(raw: any): Record<string, AttemptAnswer> {
+  if (!raw) return {};
+  if (!Array.isArray(raw)) return raw;
+  const out: Record<string, AttemptAnswer> = {};
+  for (const item of raw) {
+    if (!item) continue;
+    const qid = String(item.question_id ?? item.questionId ?? item.question ?? '');
+    if (!qid) continue;
+    const value = typeof item.value === 'number' ? item.value : Number(item.value);
+    out[qid] = {
+      questionId: qid,
+      selectedOptionIndex: Number.isFinite(value) && value >= 0 ? value : null,
+    };
+  }
+  return out;
+}
+
+function mapAttempt(raw: any, answers?: any, questions?: Question[]): Attempt {
+  const score = parseScore(raw.score ?? raw.result_score ?? raw.points);
+  const maxScore = parseScore(raw.max_score ?? raw.maxScore ?? raw.max_points ?? raw.maxPoints);
   return {
     id: String(raw.id ?? raw.attempt_id ?? raw.attemptId),
     testId: String(raw.test_id ?? raw.testId ?? ''),
     userId: String(raw.user_id ?? raw.userId ?? ''),
-    status: (raw.status ?? raw.state ?? 'ACTIVE') as any,
-    createdAt: raw.created_at ?? raw.createdAt,
-    finishedAt: raw.finished_at ?? raw.finishedAt,
+    status: normalizeAttemptStatus(raw.status ?? raw.state),
+    startedAt: raw.started_at ?? raw.startedAt ?? raw.created_at ?? raw.createdAt,
+    finishedAt: raw.finished_at ?? raw.finishedAt ?? raw.completed_at ?? raw.completedAt,
     // Questions snapshot может прийти как `questions` (массив) или `items`
-    questions: Array.isArray(raw.questions) ? raw.questions.map(mapQuestion) : Array.isArray(raw.items) ? raw.items.map(mapQuestion) : [],
-    // Answers в некоторых API приходят отдельным endpoint'ом — здесь оставляем пусто
-    answers: Array.isArray(raw.answers) ? raw.answers : [],
-    score: typeof raw.score === 'number' ? raw.score : undefined,
-    maxScore: typeof raw.max_score === 'number' ? raw.max_score : typeof raw.maxScore === 'number' ? raw.maxScore : undefined,
+    questions: questions
+      ?? (Array.isArray(raw.questions)
+        ? raw.questions.map(mapQuestion)
+        : Array.isArray(raw.items)
+          ? raw.items.map(mapQuestion)
+          : []),
+    answers: mapAttemptAnswers(answers ?? raw.answers),
+    score,
+    maxScore,
   };
+}
+
+async function fetchQuestionsForAnswers(session: Session, answers: any[]): Promise<Question[]> {
+  const ids = Array.from(
+    new Set(
+      answers
+        .map((a) => String(a?.question_id ?? a?.questionId ?? a?.question ?? ''))
+        .filter(Boolean)
+    )
+  );
+  if (ids.length === 0) return [];
+  const results = await Promise.all(
+    ids.map(async (id) => {
+      try {
+        const raw = await http<any>(session, `/questions/${encodeURIComponent(id)}`);
+        return mapQuestion(raw);
+      } catch {
+        return {
+          id,
+          text: 'Вопрос недоступен',
+          options: [],
+          correctOptionIndex: 0,
+          version: 0,
+        };
+      }
+    })
+  );
+  return results;
 }
 
 // ---------- API ----------
@@ -161,6 +252,9 @@ export const mainApiHttp = {
       }
       return mapUserShort(u);
     }),
+
+  getUserData: (session: Session, userId: string) =>
+    http<any>(session, `/users/${encodeURIComponent(userId)}/data`).then(mapUserData),
 
   updateUserFullName: (session: Session, userId: string, fullName: string) =>
     http<any>(session, `/users/${encodeURIComponent(userId)}/full-name`, {
@@ -227,7 +321,8 @@ export const mainApiHttp = {
     http<any[]>(session, `/courses/${encodeURIComponent(courseId)}/students`).then((xs) => xs.map(mapUserShort)),
 
   addCourseStudent: async (session: Session, courseId: string, userId?: string) => {
-    const qs = userId ? `?user_id=${encodeURIComponent(userId)}` : '';
+    const tokenUserId = getTokenUserId(session);
+    const qs = tokenUserId ? `?user_id=${encodeURIComponent(tokenUserId)}` : userId ? `?user_id=${encodeURIComponent(userId)}` : '';
     const primaryPath = `/courses/${encodeURIComponent(courseId)}/student${qs}`;
     const fallbackPath = `/courses/${encodeURIComponent(courseId)}/students${qs}`;
     try {
@@ -266,10 +361,11 @@ export const mainApiHttp = {
   setTestActive: (session: Session, courseId: string, testId: string, isActive: boolean) =>
     http<any>(
       session,
-      `/courses/${encodeURIComponent(courseId)}/tests/${encodeURIComponent(testId)}/active?is_active=${encodeURIComponent(
-        String(isActive)
-      )}`,
-      { method: 'PATCH' }
+      `/courses/${encodeURIComponent(courseId)}/tests/${encodeURIComponent(testId)}/active`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify({ is_active: isActive }),
+      }
     ).then((t) => mapTest(t, courseId)),
 
   // ----- Questions -----
@@ -327,23 +423,56 @@ export const mainApiHttp = {
     http<any[]>(session, `/tests/${encodeURIComponent(testId)}/results/users`).then((xs) => xs.map(mapUserShort)),
 
   getTestGrades: (session: Session, testId: string, userId?: string) =>
-    http<any>(session, `/tests/${encodeURIComponent(testId)}/results/grades${userId ? `?user_id=${encodeURIComponent(userId)}` : ''}`),
+    http<any>(
+      session,
+      `/tests/${encodeURIComponent(testId)}/results/grades${getTokenUserId(session) ? `?user_id=${encodeURIComponent(String(getTokenUserId(session)))}` : userId ? `?user_id=${encodeURIComponent(userId)}` : ''}`
+    ),
 
   getTestAnswers: (session: Session, testId: string, userId?: string) =>
-    http<any>(session, `/tests/${encodeURIComponent(testId)}/results/answers${userId ? `?user_id=${encodeURIComponent(userId)}` : ''}`),
+    http<any>(
+      session,
+      `/tests/${encodeURIComponent(testId)}/results/answers${getTokenUserId(session) ? `?user_id=${encodeURIComponent(String(getTokenUserId(session)))}` : userId ? `?user_id=${encodeURIComponent(userId)}` : ''}`
+    ),
 
   // ----- Attempts & Answers -----
-  createAttempt: (session: Session, testId: string) =>
-    http<any>(session, `/tests/${encodeURIComponent(testId)}/attempts`, { method: 'POST' }).then(mapAttempt),
+  createAttempt: async (session: Session, testId: string) => {
+    const basePath = `/attempts/tests/${encodeURIComponent(testId)}`;
+    try {
+      const raw = await http<any>(session, basePath, { method: 'POST' });
+      const attemptId = String(raw?.id ?? raw?.attempt_id ?? raw?.attemptId ?? '');
+      if (!attemptId) return mapAttempt(raw);
+      const answers = await mainApiHttp.getAttemptAnswers(session, attemptId);
+      const questions = await fetchQuestionsForAnswers(session, answers);
+      return mapAttempt(raw, answers, questions);
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 400 && session.user?.id) {
+        const raw = await http<any>(session, `${basePath}?user_id=${encodeURIComponent(session.user.id)}`, { method: 'POST' });
+        const attemptId = String(raw?.id ?? raw?.attempt_id ?? raw?.attemptId ?? '');
+        if (!attemptId) return mapAttempt(raw);
+        const answers = await mainApiHttp.getAttemptAnswers(session, attemptId);
+        const questions = await fetchQuestionsForAnswers(session, answers);
+        return mapAttempt(raw, answers, questions);
+      }
+      throw e;
+    }
+  },
 
-  finishAttempt: (session: Session, attemptId: string) =>
-    http(session, `/attempts/${encodeURIComponent(attemptId)}/finish`, { method: 'POST' }),
+  finishAttempt: async (session: Session, attemptId: string) => {
+    const raw = await http<any>(session, `/attempts/${encodeURIComponent(attemptId)}/finish`, { method: 'POST' });
+    const answers = await mainApiHttp.getAttemptAnswers(session, String(raw?.id ?? attemptId));
+    const questions = await fetchQuestionsForAnswers(session, answers);
+    return mapAttempt(raw, answers, questions);
+  },
 
-  getAttempt: (session: Session, attemptId: string) =>
-    http<any>(session, `/attempts/${encodeURIComponent(attemptId)}`).then(mapAttempt),
+  getAttempt: async (session: Session, attemptId: string) => {
+    const raw = await http<any>(session, `/attempts/${encodeURIComponent(attemptId)}`);
+    const answers = await mainApiHttp.getAttemptAnswers(session, attemptId);
+    const questions = await fetchQuestionsForAnswers(session, answers);
+    return mapAttempt(raw, answers, questions);
+  },
 
   getAttemptAnswers: (session: Session, attemptId: string) =>
-    http<any[]>(session, `/attempts/${encodeURIComponent(attemptId)}/answers`),
+    http<any[]>(session, `/answers/attempts/${encodeURIComponent(attemptId)}`),
 
   updateAnswer: (session: Session, answerId: string, value: number) =>
     http(session, `/answers/${encodeURIComponent(answerId)}`, {
@@ -478,9 +607,10 @@ updateQuestion: async (session: Session, _testId: string, questionId: string, pa
 /**
  * UI-compat: сохранить ответ по questionId.
  */
-saveAnswer: async (session: Session, attemptId: string, questionId: string, value: number) => {
-  return mainApiHttp.updateAnswerByQuestionId(session, attemptId, questionId, value);
-},
+  saveAnswer: async (session: Session, attemptId: string, questionId: string, value: number) => {
+    await mainApiHttp.updateAnswerByQuestionId(session, attemptId, questionId, value);
+    return mainApiHttp.getAttempt(session, attemptId);
+  },
 
 /**
  * UI-compat: админская страница "все попытки".
@@ -490,11 +620,27 @@ getAllAttempts: async (_session: Session) => {
   return [] as Attempt[];
 },
 
-  // Эти методы отсутствуют в реальном контракте (пока не реализовано) — возвращаем пусто.
-  getAttemptsForTest: async (_session: Session, _testId: string, _userId: string) => {
-    return [] as Attempt[];
+  getAttemptsForTest: async (session: Session, testId: string, userId: string) => {
+    try {
+      const qs = userId ? `?user_id=${encodeURIComponent(userId)}` : '';
+      const raw = await http<any[]>(session, `/attempts/tests/${encodeURIComponent(testId)}${qs}`);
+      return raw.map((item) => mapAttempt(item));
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 404) return [] as Attempt[];
+      throw e;
+    }
   },
-  getActiveAttempt: async (_session: Session, _testId: string, _userId: string) => {
-    return undefined as unknown as Attempt | undefined;
+  getActiveAttempt: async (session: Session, testId: string, userId: string) => {
+    const qs = userId ? `?user_id=${encodeURIComponent(userId)}` : '';
+    try {
+      const raw = await http<any>(session, `/attempts/tests/${encodeURIComponent(testId)}/active${qs}`);
+      return mapAttempt(raw);
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 404) {
+        const list = await mainApiHttp.getAttemptsForTest(session, testId, userId);
+        return list.find((a) => a.status === AttemptStatus.IN_PROGRESS) || null;
+      }
+      throw e;
+    }
   },
 };

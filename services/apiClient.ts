@@ -2,12 +2,10 @@ import { getSessionTokenFromCookie, clearSessionTokenCookie } from '../utils/coo
 import { sessionService } from './sessionService';
 import { Session, UserStatus } from '../types';
 import { emitApiUiEvent } from './apiEvents';
+import { USE_AUTH_FLOW } from '../constants';
 
 /**
  * ApiError — минимальная модель ошибок HTTP.
- * Нужна, чтобы имитировать поведение Web Client из task-flow:
- *  - 401: access истёк → refresh → retry → если refresh невалиден → logout
- *  - 403: нет прав → страница /forbidden
  */
 export class ApiError extends Error {
   status: number;
@@ -22,13 +20,24 @@ export type RequestOptions = {
   suppressForbiddenRedirect?: boolean;
 };
 
+/**
+ * В BFF+Redis режиме:
+ * - cookie HttpOnly, JS не читает session_token
+ * - refresh токенов НЕ делает фронт (это на стороне Auth/BFF)
+ */
 async function requireAuthorizedSession(): Promise<Session> {
-  const token = getSessionTokenFromCookie();
+  const token = USE_AUTH_FLOW ? null : getSessionTokenFromCookie();
   const session = await sessionService.getSession(token);
-  if (session.status !== UserStatus.AUTHORIZED) throw new ApiError(401, 'Not authorized');
+
+  if (session.status !== UserStatus.AUTHORIZED) {
+    throw new ApiError(401, 'Not authorized');
+  }
   return session;
 }
 
+/**
+ * Старый helper — актуален только для non-auth-flow (manual/mock).
+ */
 function isAccessExpired(session: Session) {
   if (!session.accessTokenExpiresAt) return false;
   return Date.now() > session.accessTokenExpiresAt;
@@ -36,19 +45,19 @@ function isAccessExpired(session: Session) {
 
 /**
  * Главный запросный хелпер.
- * В реальном проекте здесь был бы fetch/axios + baseURL.
  */
 export async function requestWithAuth<T>(fn: RequestFn<T>, options?: RequestOptions): Promise<T> {
   try {
     let session = await requireAuthorizedSession();
 
-    // access истёк → пытаемся refresh
-    if (isAccessExpired(session)) {
+    // ✅ В auth-flow НЕ делаем refreshAccessToken на фронте
+    if (!USE_AUTH_FLOW && isAccessExpired(session)) {
       const token = getSessionTokenFromCookie();
       if (!token) throw new ApiError(401, 'Missing session token');
 
       emitApiUiEvent({ type: 'refresh:start' });
       try {
+        // @ts-ignore - метод существует в mock режиме
         session = await sessionService.refreshAccessToken(token);
         if (session.status !== UserStatus.AUTHORIZED) throw new ApiError(401, 'Refresh failed');
         emitApiUiEvent({ type: 'refresh:success' });
@@ -60,19 +69,17 @@ export async function requestWithAuth<T>(fn: RequestFn<T>, options?: RequestOpti
 
     return await fn(session);
   } catch (e: any) {
-    // Унифицированная реакция Web Client на ошибки, как в task-flow.
     if (e instanceof ApiError) {
       if (e.status === 403 && !options?.suppressForbiddenRedirect) {
         emitApiUiEvent({ type: 'forbidden' });
-        window.location.href = '/forbidden';
       }
 
       if (e.status === 401) {
         emitApiUiEvent({ type: 'session:expired' });
-        // Считаем, что refresh тоже невалиден → чистим сессию и возвращаем на /
+
+        // ✅ В auth-flow logout делаем через BFF (cookie), а не через token из JS
         try {
-          const token = getSessionTokenFromCookie();
-          if (token) await sessionService.logout(token, false);
+          await sessionService.logout(USE_AUTH_FLOW ? null : getSessionTokenFromCookie(), false);
         } finally {
           clearSessionTokenCookie();
           window.location.href = '/';
