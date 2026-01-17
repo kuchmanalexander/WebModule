@@ -20,6 +20,17 @@ export interface User {
   createdAt?: string; // ISO
 }
 
+export interface UserData {
+  id: string;
+  username: string;
+  fullName: string;
+  email: string | null;
+  isBlocked: boolean;
+  roles: string[];
+  coursesCount: number;
+  attemptsCount: number;
+}
+
 export interface Session {
   status: UserStatus;
   sessionToken?: string;

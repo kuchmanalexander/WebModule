@@ -92,42 +92,48 @@ export const AttemptPage: React.FC = () => {
         </div>
 
         <div className="mt-6 space-y-4">
-          {attempt.questions.map((q, idx) => {
-            const selected = attempt.answers?.[q.id]?.selectedOptionIndex;
-            return (
-              <div key={q.id} className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <div className="text-sm text-gray-500 font-bold">Вопрос {idx + 1} • v{q.version}</div>
-                    <div className="text-base font-black text-gray-900 mt-1">{q.text}</div>
+          {attempt.questions.length === 0 ? (
+            <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 text-sm text-amber-900">
+              В этой попытке нет доступных вопросов. Если это не ожидаемо, проверь привязку вопросов к тесту.
+            </div>
+          ) : (
+            attempt.questions.map((q, idx) => {
+              const selected = attempt.answers?.[q.id]?.selectedOptionIndex;
+              return (
+                <div key={q.id} className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="text-sm text-gray-500 font-bold">Вопрос {idx + 1} • v{q.version}</div>
+                      <div className="text-base font-black text-gray-900 mt-1">{q.text}</div>
+                    </div>
+                  </div>
+
+                  <div className="mt-4 grid gap-2">
+                    {q.options.map((opt, i) => {
+                      const isSelected = selected === i;
+                      return (
+                        <button
+                          key={i}
+                          disabled={busy}
+                          onClick={() => select(q.id, i)}
+                          className={`text-left px-4 py-3 rounded-xl border transition-colors ${
+                            isSelected
+                              ? 'border-indigo-600 bg-indigo-50'
+                              : 'border-gray-200 bg-white hover:bg-gray-50'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-3">
+                            <span className={`font-semibold ${isSelected ? 'text-indigo-800' : 'text-gray-800'}`}>{opt}</span>
+                            {isSelected && <span className="text-indigo-700 font-black">✓</span>}
+                          </div>
+                        </button>
+                      );
+                    })}
                   </div>
                 </div>
-
-                <div className="mt-4 grid gap-2">
-                  {q.options.map((opt, i) => {
-                    const isSelected = selected === i;
-                    return (
-                      <button
-                        key={i}
-                        disabled={busy}
-                        onClick={() => select(q.id, i)}
-                        className={`text-left px-4 py-3 rounded-xl border transition-colors ${
-                          isSelected
-                            ? 'border-indigo-600 bg-indigo-50'
-                            : 'border-gray-200 bg-white hover:bg-gray-50'
-                        }`}
-                      >
-                        <div className="flex items-center justify-between gap-3">
-                          <span className={`font-semibold ${isSelected ? 'text-indigo-800' : 'text-gray-800'}`}>{opt}</span>
-                          {isSelected && <span className="text-indigo-700 font-black">✓</span>}
-                        </div>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            );
-          })}
+              );
+            })
+          )}
         </div>
 
         <div className="mt-8 text-xs text-gray-500">

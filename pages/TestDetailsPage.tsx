@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import Layout from '../components/Layout';
 import { useSession } from '../context/SessionProvider';
+import { useUi } from '../context/UiProvider';
 import { Attempt, AttemptStatus, Test } from '../types';
 import { mainClient } from '../services/mainClient';
 
@@ -9,34 +10,63 @@ export const TestDetailsPage: React.FC = () => {
   const { testId } = useParams();
   const navigate = useNavigate();
   const { session, logout } = useSession();
+  const { pushToast } = useUi();
   const userId = session.user?.id || 'unknown_user';
 
   const [test, setTest] = useState<Test | null>(null);
   const [attempts, setAttempts] = useState<Attempt[] | null>(null);
   const [activeAttempt, setActiveAttempt] = useState<Attempt | null>(null);
   const [busy, setBusy] = useState(false);
+  const [hasCompletedAttempt, setHasCompletedAttempt] = useState(false);
 
   useEffect(() => {
     let mounted = true;
     (async () => {
       if (!testId) return;
       const t = await mainClient.getTest(testId);
-      const a = await mainClient.getAttemptsForTest(testId, userId);
-      const active = await mainClient.getActiveAttempt(testId, userId);
+      const [a, active, grades] = await Promise.all([
+        mainClient.getAttemptsForTest(testId, userId),
+        mainClient.getActiveAttempt(testId, userId),
+        mainClient.getTestGrades(testId, userId).catch(() => []),
+      ]);
       if (!mounted) return;
       setTest(t);
-      setAttempts(a);
+      if (active && !a.find((item) => item.id === active.id)) {
+        setAttempts([active, ...a]);
+      } else {
+        setAttempts(a);
+      }
       setActiveAttempt(active);
+      setHasCompletedAttempt(Array.isArray(grades) ? grades.length > 0 : Boolean(grades));
     })();
     return () => { mounted = false; };
   }, [testId, userId]);
 
   const startOrResume = async () => {
     if (!testId) return;
+    if (!activeAttempt && hasCompletedAttempt) {
+      pushToast({ kind: 'info', title: 'Тест уже пройден', message: 'Повторное прохождение недоступно.' });
+      return;
+    }
     setBusy(true);
     try {
+      if (activeAttempt) {
+        navigate(`/attempts/${activeAttempt.id}`);
+        return;
+      }
       const attempt = await mainClient.createAttempt(testId, userId);
       navigate(`/attempts/${attempt.id}`);
+    } catch (e) {
+      try {
+        const active = await mainClient.getActiveAttempt(testId, userId);
+        if (active) {
+          navigate(`/attempts/${active.id}`);
+          return;
+        }
+      } catch {
+        // ignore fallback errors
+      }
+      pushToast({ kind: 'error', title: 'Не удалось начать попытку', message: String(e) });
     } finally {
       setBusy(false);
     }
@@ -57,17 +87,22 @@ export const TestDetailsPage: React.FC = () => {
             </p>
           </div>
 
-          <button
-            disabled={busy || !test?.isActive}
-            onClick={startOrResume}
-            className={`px-4 py-2 rounded-xl font-bold text-sm shadow-sm transition-colors ${
-              busy || !test?.isActive
-                ? 'bg-gray-200 text-gray-500 cursor-not-allowed'
-                : 'bg-indigo-600 text-white hover:bg-indigo-700'
-            }`}
-          >
-            {activeAttempt ? 'Продолжить попытку' : 'Начать попытку'}
-          </button>
+          <div className="text-right">
+            <button
+              disabled={busy || !test?.isActive || (!activeAttempt && hasCompletedAttempt)}
+              onClick={startOrResume}
+              className={`px-4 py-2 rounded-xl font-bold text-sm shadow-sm transition-colors ${
+                busy || !test?.isActive || (!activeAttempt && hasCompletedAttempt)
+                  ? 'bg-gray-200 text-gray-500 cursor-not-allowed'
+                  : 'bg-indigo-600 text-white hover:bg-indigo-700'
+              }`}
+            >
+              {activeAttempt ? 'Продолжить попытку' : hasCompletedAttempt ? 'Тест пройден' : 'Начать попытку'}
+            </button>
+            {!activeAttempt && hasCompletedAttempt && (
+              <div className="mt-2 text-xs text-gray-500">Повторное прохождение недоступно.</div>
+            )}
+          </div>
         </div>
 
         <div className="mt-6 bg-white rounded-2xl border border-gray-100 shadow-sm p-5">

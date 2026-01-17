@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import Layout from '../components/Layout';
 import { useSession } from '../context/SessionProvider';
-import { Attempt, AttemptStatus } from '../types';
+import { Attempt, AttemptStatus, Role } from '../types';
 import { mainClient } from '../services/mainClient';
 
 export const AttemptResultPage: React.FC = () => {
@@ -32,6 +32,15 @@ export const AttemptResultPage: React.FC = () => {
   }
 
   const isCompleted = attempt.status === AttemptStatus.COMPLETED;
+  const canViewCorrect = Boolean(
+    session.permissions?.includes('answer:read') ||
+    session.permissions?.includes('test:answer:read') ||
+    session.permissions?.includes('quest:read') ||
+    session.user?.roles?.includes(Role.TEACHER) ||
+    session.user?.roles?.includes(Role.ADMIN)
+  );
+  const scoreValue = typeof attempt.score === 'number' ? attempt.score : Number(attempt.score ?? 0);
+  const displayScore = Number.isFinite(scoreValue) ? scoreValue : 0;
 
   return (
     <Layout user={session.user} status={session.status} onLogout={logout}>
@@ -50,7 +59,7 @@ export const AttemptResultPage: React.FC = () => {
           ) : (
             <>
               <div className="mt-3 text-gray-700">
-                Итог: <span className="font-black text-gray-900">{attempt.score}/{attempt.maxScore}</span>
+                Итог: <span className="font-black text-gray-900">{displayScore}/100</span>
               </div>
               <div className="mt-1 text-sm text-gray-600">
                 Старт: {new Date(attempt.startedAt).toLocaleString()} • Завершение: {attempt.finishedAt ? new Date(attempt.finishedAt).toLocaleString() : '—'}
@@ -67,16 +76,18 @@ export const AttemptResultPage: React.FC = () => {
                           <div className="text-sm text-gray-500 font-bold">Вопрос {idx + 1}</div>
                           <div className="font-black text-gray-900 mt-1">{q.text}</div>
                         </div>
-                        <div className={`text-sm font-black ${isCorrect ? 'text-green-700' : 'text-red-700'}`}>
-                          {selected === undefined ? 'нет ответа' : isCorrect ? 'верно' : 'неверно'}
+                        <div className={`text-sm font-black ${canViewCorrect ? (isCorrect ? 'text-green-700' : 'text-red-700') : 'text-gray-500'}`}>
+                          {selected === undefined ? 'нет ответа' : canViewCorrect ? (isCorrect ? 'верно' : 'неверно') : 'ответ сохранён'}
                         </div>
                       </div>
                       <div className="mt-3 text-sm text-gray-700">
                         Твой ответ: <span className="font-bold">{selected === undefined ? '—' : q.options[selected]}</span>
                       </div>
-                      <div className="mt-1 text-sm text-gray-700">
-                        Правильный: <span className="font-bold">{q.options[q.correctOptionIndex]}</span>
-                      </div>
+                      {canViewCorrect && (
+                        <div className="mt-1 text-sm text-gray-700">
+                          Правильный: <span className="font-bold">{q.options[q.correctOptionIndex]}</span>
+                        </div>
+                      )}
                     </div>
                   );
                 })}

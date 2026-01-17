@@ -1,5 +1,5 @@
 import { API_SIMULATION_LATENCY } from '../constants';
-import { Attempt, AttemptStatus, Course, Question, Test, User, Role } from '../types';
+import { Attempt, AttemptStatus, Course, Question, Test, User, Role, UserData } from '../types';
 
 /**
  * Main API (MOCK)
@@ -204,6 +204,13 @@ export async function createAttempt(testId: string, userId: string): Promise<Att
   await sleep();
   const data = load();
 
+  const completed = data.attempts.find(
+    a => a.testId === testId && a.userId === userId && a.status === AttemptStatus.COMPLETED
+  );
+  if (completed) {
+    throw new Error('Attempt already completed');
+  }
+
   const existing = data.attempts.find(a => a.testId === testId && a.userId === userId && a.status === AttemptStatus.IN_PROGRESS);
   if (existing) return existing;
 
@@ -278,12 +285,39 @@ export async function getAllUsers(): Promise<User[]> {
   return load().users;
 }
 
+export async function getUserData(userId: string): Promise<UserData | null> {
+  await sleep();
+  const data = load();
+  const u = data.users.find((x) => x.id === userId);
+  if (!u) return null;
+  const attemptsCount = data.attempts.filter((a) => a.userId === userId).length;
+  return {
+    id: u.id,
+    username: u.id,
+    fullName: u.fullName,
+    email: u.email ?? null,
+    isBlocked: Boolean(u.isBlocked),
+    coursesCount: 0,
+    attemptsCount,
+  };
+}
+
 export async function blockUser(userId: string): Promise<User | null> {
   await sleep();
   const data = load();
   const u = data.users.find(x => x.id === userId);
   if (!u) return null;
   u.isBlocked = true;
+  save(data);
+  return u;
+}
+
+export async function updateUserFullName(userId: string, fullName: string): Promise<User | null> {
+  await sleep();
+  const data = load();
+  const u = data.users.find(x => x.id === userId);
+  if (!u) return null;
+  u.fullName = fullName;
   save(data);
   return u;
 }
